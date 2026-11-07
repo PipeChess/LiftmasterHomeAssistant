@@ -1,0 +1,182 @@
+# Reference ESPHome configuration for KinCony KC868-A4 + LiftMaster LA400DC.
+# REVIEW THIS FILE IN FULL and validate/bench-test for your ESPHome version.
+# It replaces, rather than supplements, the KinCony manufacturer's GPIO package.
+# Do not connect to a gate until qualified gate-system technician approval.
+# This configuration is NOT a safety-certified motor controller.
+
+substitutions:
+  name: gate-relay-controller
+  friendly_name: Driveway Gate Relay Controller
+
+esphome:
+  name: ${name}
+  name_add_mac_suffix: false
+  friendly_name: ${friendly_name}
+
+esp32:
+  board: esp32dev
+
+logger:
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+# Relay contacts R1/R2 send short gate command requests.
+# R3 maintains a *soft* EXIT hold. R4 unused; leave factory STOP jumper.
+# Software interlock is NOT electrical safety isolation.
+switch:
+  - platform: gpio
+    id: gate_relay_open
+    pin: GPIO2
+    internal: true
+    restore_mode: ALWAYS_OFF
+    interlock: [gate_relay_close]
+    interlock_wait_time: 200ms
+    on_turn_on:
+      - delay: 500ms
+      - switch.turn_off: gate_relay_open
+
+  - platform: gpio
+    id: gate_relay_close
+    pin: GPIO15
+    internal: true
+    restore_mode: ALWAYS_OFF
+    interlock: [gate_relay_open]
+    interlock_wait_time: 200ms
+    on_turn_on:
+      - delay: 500ms
+      - switch.turn_off: gate_relay_close
+
+  - platform: gpio
+    id: gate_party_relay
+    pin: GPIO5
+    internal: true
+    restore_mode: ALWAYS_OFF
+
+  - platform: gpio
+    id: gate_stop_unused
+    pin: GPIO4
+    internal: true
+    restore_mode: ALWAYS_OFF
+
+  # Expose an intentionally guarded switch, not raw Relay 3.
+  # OFF always allowed; ON only if both feedback inputs indicate fully open.
+  - platform: template
+    id: gate_party_switch
+    name: "Gate Party Mode"
+    icon: mdi:party-popper
+    lambda: |-
+      return id(gate_party_relay).state;
+    turn_on_action:
+      - if:
+          condition:
+            lambda: |-
+              return id(gate_input_1).has_state() &&
+                     id(gate_input_2).has_state() &&
+                     id(gate_input_1).state &&
+                     id(gate_input_2).state;
+          then:
+            - switch.turn_on: gate_party_relay
+    turn_off_action:
+      - switch.turn_off: gate_party_relay
+
+# The KC868 inputs detect closures between D1..D4 and digital-input GND.
+binary_sensor:
+  - platform: gpio
+    id: gate_input_1
+    name: "Gate Input 1"
+    pin:
+      number: GPIO36
+      inverted: true
+    filters:
+      - delayed_on_off: 50ms
+
+  - platform: gpio
+    id: gate_input_2
+    name: "Gate Input 2"
+    pin:
+      number: GPIO39
+      inverted: true
+    filters:
+      - delayed_on_off: 50ms
+
+  - platform: gpio
+    id: gate_input_3
+    name: "Gate Input 3"
+    pin:
+      number: GPIO27
+      inverted: true
+    filters:
+      - delayed_on_off: 50ms
+
+  - platform: gpio
+    id: gate_input_4
+    name: "Gate Input 4"
+    pin:
+      number: GPIO14
+      inverted: true
+    filters:
+      - delayed_on_off: 50ms
+
+# User-visible pulse requests with position checks at the ESPHome layer.
+# They do not guarantee physical safety, accurate limit state, or line of sight.
+button:
+  - platform: template
+    name: "Gate Open"
+    icon: mdi:gate-open
+    on_press:
+      - if:
+          condition:
+            lambda: |-
+              // Allow from closed/between-limits, never from already open
+              // or an uninitialized/contradictory input state.
+              return id(gate_input_1).has_state() &&
+                     id(gate_input_2).has_state() &&
+                     !id(gate_input_1).state;
+          then:
+            - switch.turn_on: gate_relay_open
+
+  - platform: template
+    name: "Gate Close"
+    icon: mdi:gate
+    on_press:
+      - if:
+          condition:
+            lambda: |-
+              // Only allow when clearly NOT at closed limit.
+              // During fault/power loss, D2 may drop low and block CLOSE.
+              return id(gate_input_1).has_state() &&
+                     id(gate_input_2).has_state() &&
+                     id(gate_input_2).state;
+          then:
+            # Release EXIT hold before requesting close.
+            - switch.turn_off: gate_party_relay
+            - delay: 250ms
+            - switch.turn_on: gate_relay_close
+
+text_sensor:
+  - platform: template
+    id: gate_position
+    name: "Gate Position"
+    icon: mdi:gate
+    update_interval: 500ms
+    lambda: |-
+      if (!id(gate_input_1).has_state() || !id(gate_input_2).has_state())
+        return {"Unknown"};
+      bool fully_open = id(gate_input_1).state;
+      bool not_closed = id(gate_input_2).state;
+      if (fully_open && not_closed) return {"Open"};
+      if (!fully_open && not_closed) return {"Between Limits"};
+      if (!fully_open && !not_closed) return {"Closed"};
+      return {"Invalid State"};
+
+# LIMITATION: A powerless LiftMaster can produce D1=off/D2=off like Closed.
+# Add independently verified operator-health monitoring before security use.

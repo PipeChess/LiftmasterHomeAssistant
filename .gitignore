@@ -1,0 +1,26 @@
+# macOS metadata
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Local secrets and credentials
+secrets.yaml
+.env
+.env.*
+!.env.example
+*.local.yaml
+*.private.yaml
+*.pem
+*.key
+*.p12
+*.pfx
+
+# ESPHome build and cache
+.esphome/
+__pycache__/
+*.pyc
+
+# Local editor files
+.vscode/
+.idea/
